@@ -143,15 +143,25 @@ def train():
     )
     print(f"  Training examples: {len(dataset['train'])}")
 
-    # Load model
-    print("\nLoading model in bf16 with Flash Attention 2...")
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        trust_remote_code=True,
-        attn_implementation="flash_attention_2",
-    )
+    # Load model - try flash attention, fallback to sdpa
+    try:
+        print("\nLoading model in bf16 with Flash Attention 2...")
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            trust_remote_code=True,
+            attn_implementation="flash_attention_2",
+        )
+    except Exception as e:
+        print(f"Flash Attention not available ({e}), using SDPA...")
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            trust_remote_code=True,
+            attn_implementation="sdpa",
+        )
 
     # No gradient checkpointing = faster but more VRAM
     model.enable_input_require_grads()

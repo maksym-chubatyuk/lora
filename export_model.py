@@ -1,274 +1,297 @@
 #!/usr/bin/env python3
 """
-Export fine-tuned Qwen3-VL model for inference.
+Export JAX-trained Qwen3-8B LoRA model for inference.
 
-Supports:
-1. Merge LoRA into base model (for further quantization)
-2. Export to GGUF format (for llama.cpp/Ollama)
-3. Keep as separate adapters (for transformers + PEFT)
+Converts JAX/EasyDeL checkpoints to formats usable for inference:
+1. PyTorch/HuggingFace format (merged weights)
+2. GGUF format (for llama.cpp/Ollama)
 
 Usage:
-    # Merge LoRA adapters into base model
-    python export_model.py --lora-path ./qwen3-vl-asuka-lora --output ./merged --mode merge
+    # Convert JAX checkpoint to merged HuggingFace format
+    python export_model.py --checkpoint ./output/checkpoints --output ./output/merged --mode merge
 
-    # Export to GGUF (requires llama.cpp)
-    python export_model.py --lora-path ./qwen3-vl-asuka-lora --output ./gguf --mode gguf
-
-    # Just copy adapters for PEFT inference
-    python export_model.py --lora-path ./qwen3-vl-asuka-lora --output ./inference --mode adapters
+    # Convert to GGUF (includes merge step)
+    python export_model.py --checkpoint ./output/checkpoints --output ./output/gguf --mode gguf
 """
 
 import argparse
-import shutil
-import subprocess
+import json
+import os
 import sys
 from pathlib import Path
 
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
+import numpy as np
+
+# Only import JAX if we're doing the merge
+# PyTorch is imported for the GGUF conversion step
 
 
 MODEL_ID = "Qwen/Qwen3-8B"
 
 
-def merge_lora(lora_path: str, output_path: str):
-    """Merge LoRA adapters into base model."""
-    print(f"Loading base model: {MODEL_ID}")
+def jax_to_pytorch_state_dict(jax_params: dict, model_config: dict) -> dict:
+    """
+    Convert JAX parameter tree to PyTorch state dict.
 
-    # Load base model in fp16 for merging
+    This handles the different naming conventions and array formats
+    between JAX/Flax and PyTorch.
+    """
+    import torch
+
+    state_dict = {}
+
+    def flatten_params(params, prefix=""):
+        """Recursively flatten nested JAX params."""
+        for key, value in params.items():
+            full_key = f"{prefix}.{key}" if prefix else key
+
+            if isinstance(value, dict):
+                flatten_params(value, full_key)
+            else:
+                # Convert to PyTorch tensor
+                # JAX uses (out, in) for linear layers, PyTorch uses (in, out)
+                arr = np.array(value)
+
+                # Handle transposition for linear layers
+                if "kernel" in key and arr.ndim == 2:
+                    arr = arr.T
+                    full_key = full_key.replace("kernel", "weight")
+                elif "scale" in key:
+                    full_key = full_key.replace("scale", "weight")
+
+                # Convert naming: Flax uses underscores, PyTorch uses dots
+                full_key = full_key.replace("_", ".")
+
+                state_dict[full_key] = torch.from_numpy(arr)
+
+    flatten_params(jax_params)
+    return state_dict
+
+
+def load_jax_checkpoint(checkpoint_path: str):
+    """Load JAX checkpoint using Orbax."""
+    import orbax.checkpoint as ocp
+
+    print(f"Loading JAX checkpoint from: {checkpoint_path}")
+
+    checkpointer = ocp.StandardCheckpointer()
+
+    # Find the latest checkpoint
+    checkpoint_dir = Path(checkpoint_path)
+    if not checkpoint_dir.exists():
+        raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_path}")
+
+    # EasyDeL saves checkpoints in subdirectories with step numbers
+    checkpoint_dirs = sorted(
+        [d for d in checkpoint_dir.iterdir() if d.is_dir() and d.name.isdigit()],
+        key=lambda x: int(x.name)
+    )
+
+    if checkpoint_dirs:
+        latest = checkpoint_dirs[-1]
+        print(f"Found checkpoint at step: {latest.name}")
+    else:
+        latest = checkpoint_dir
+
+    # Load the checkpoint
+    restored = checkpointer.restore(latest)
+
+    return restored
+
+
+def merge_and_export_hf(checkpoint_path: str, output_path: str):
+    """
+    Load JAX checkpoint, merge LoRA weights, and export to HuggingFace format.
+    """
+    import jax
+    import jax.numpy as jnp
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+
+    print("=" * 60)
+    print("Exporting JAX checkpoint to HuggingFace format")
+    print("=" * 60)
+
+    # Load JAX checkpoint
+    checkpoint = load_jax_checkpoint(checkpoint_path)
+
+    # The checkpoint should contain:
+    # - params: the LoRA-adapted parameters
+    # - or separate base_params + lora_params
+
+    if "params" in checkpoint:
+        params = checkpoint["params"]
+    else:
+        print("Warning: Unexpected checkpoint format. Trying to find parameters...")
+        params = checkpoint
+
+    print(f"Loaded parameters with {len(params)} top-level keys")
+
+    # Load base model in PyTorch
+    print(f"\nLoading base model: {MODEL_ID}")
     base_model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
         torch_dtype=torch.float16,
-        device_map="auto",
+        device_map="cpu",  # Keep on CPU for merging
         trust_remote_code=True,
     )
 
-    print(f"Loading LoRA adapters from: {lora_path}")
-    model = PeftModel.from_pretrained(base_model, lora_path)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
 
-    print("Merging LoRA weights...")
-    model = model.merge_and_unload()
+    # Convert JAX params to PyTorch state dict
+    print("Converting JAX parameters to PyTorch format...")
+    config = AutoConfig.from_pretrained(MODEL_ID, trust_remote_code=True)
+    jax_state_dict = jax_to_pytorch_state_dict(params, config.to_dict())
 
-    print(f"Saving merged model to: {output_path}")
-    model.save_pretrained(output_path, safe_serialization=True)
+    # Update base model state dict with fine-tuned weights
+    base_state_dict = base_model.state_dict()
 
-    # Also save tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(lora_path, trust_remote_code=True)
+    updated_count = 0
+    for key, value in jax_state_dict.items():
+        if key in base_state_dict:
+            if base_state_dict[key].shape == value.shape:
+                base_state_dict[key] = value
+                updated_count += 1
+            else:
+                print(f"  Shape mismatch for {key}: {base_state_dict[key].shape} vs {value.shape}")
+
+    print(f"Updated {updated_count} parameters")
+
+    # Load updated weights
+    base_model.load_state_dict(base_state_dict)
+
+    # Save
+    print(f"\nSaving merged model to: {output_path}")
+    os.makedirs(output_path, exist_ok=True)
+
+    base_model.save_pretrained(output_path, safe_serialization=True)
     tokenizer.save_pretrained(output_path)
 
-    print("Merge complete!")
+    print("Export complete!")
     return output_path
 
 
-def export_gguf(model_path: str, output_path: str, quant_type: str = "q4_k_m"):
+def export_gguf(model_path: str, output_path: str, quant_type: str = "Q4_K_M"):
     """
-    Export to GGUF format for llama.cpp/Ollama.
+    Convert HuggingFace model to GGUF format.
 
-    Note: This requires llama.cpp's convert scripts. The process is:
-    1. Clone llama.cpp
-    2. Run convert_hf_to_gguf.py
-    3. Quantize with llama-quantize
-
-    This function provides instructions since the conversion depends on
-    external tools.
+    This requires llama.cpp to be available.
     """
-    print("\n" + "="*60)
-    print("GGUF Export Instructions")
-    print("="*60)
+    import subprocess
 
-    print(f"""
-To convert to GGUF format for llama.cpp/Ollama:
+    print("\n" + "=" * 60)
+    print("Converting to GGUF format")
+    print("=" * 60)
 
-1. Clone llama.cpp (if not already):
-   git clone https://github.com/ggerganov/llama.cpp
-   cd llama.cpp
+    os.makedirs(output_path, exist_ok=True)
 
-2. Install dependencies:
-   pip install -r requirements.txt
+    # Check for llama.cpp
+    llama_cpp_path = Path("llama.cpp")
+    convert_script = llama_cpp_path / "convert_hf_to_gguf.py"
 
-3. Convert to GGUF:
-   python convert_hf_to_gguf.py {model_path} --outfile {output_path}/model-f16.gguf --outtype f16
+    if not convert_script.exists():
+        print(f"""
+llama.cpp not found. Please set it up first:
 
-4. Quantize (recommended for inference):
-   ./llama-quantize {output_path}/model-f16.gguf {output_path}/model-{quant_type}.gguf {quant_type}
+    git clone https://github.com/ggerganov/llama.cpp
+    pip install -r llama.cpp/requirements.txt
 
-Recommended quantization types:
-  - q4_k_m: Good balance of quality/size (recommended for RTX 3090)
-  - q5_k_m: Higher quality, larger size
-  - q8_0: Near-lossless, 8GB+ VRAM needed
-
-For M4 Max (48GB unified memory):
-  - q4_k_m or q5_k_m recommended
-  - Can also use f16 if memory allows
-
-NOTE: Qwen3-VL is a vision-language model. GGUF conversion may have
-limited support for the vision encoder. Check llama.cpp releases for
-the latest multimodal support.
-
-Alternative: Use the model with transformers + PEFT directly.
+Then run this script again.
 """)
 
-    # Create output directory
-    Path(output_path).mkdir(parents=True, exist_ok=True)
+        # Write helper script
+        helper_script = f"""#!/bin/bash
+# GGUF conversion helper script
 
-    # Write a helper script
-    script_content = f"""#!/bin/bash
-# GGUF conversion script for Qwen3-VL-Asuka
+set -e
 
 MODEL_PATH="{model_path}"
-OUTPUT_DIR="{output_path}"
+OUTPUT_PATH="{output_path}"
 QUANT_TYPE="{quant_type}"
 
-# Check if llama.cpp exists
+# Clone llama.cpp if needed
 if [ ! -d "llama.cpp" ]; then
-    echo "Cloning llama.cpp..."
     git clone https://github.com/ggerganov/llama.cpp
 fi
 
-cd llama.cpp
-
 # Install requirements
-pip install -r requirements.txt
+pip install -r llama.cpp/requirements.txt
+
+# Build quantize tool
+cd llama.cpp
+cmake -B build
+cmake --build build --target llama-quantize -j
+cd ..
 
 # Convert to GGUF
-echo "Converting to GGUF..."
-python convert_hf_to_gguf.py "$MODEL_PATH" --outfile "$OUTPUT_DIR/model-f16.gguf" --outtype f16
-
-# Build quantize tool if needed
-if [ ! -f "llama-quantize" ]; then
-    echo "Building llama.cpp..."
-    make llama-quantize
-fi
+python llama.cpp/convert_hf_to_gguf.py "$MODEL_PATH" \\
+    --outfile "$OUTPUT_PATH/model-f16.gguf" \\
+    --outtype f16
 
 # Quantize
-echo "Quantizing to $QUANT_TYPE..."
-./llama-quantize "$OUTPUT_DIR/model-f16.gguf" "$OUTPUT_DIR/model-$QUANT_TYPE.gguf" $QUANT_TYPE
+./llama.cpp/build/bin/llama-quantize \\
+    "$OUTPUT_PATH/model-f16.gguf" \\
+    "$OUTPUT_PATH/model-$QUANT_TYPE.gguf" \\
+    $QUANT_TYPE
 
-echo "Done! Output files:"
-ls -lh "$OUTPUT_DIR"/*.gguf
+# Clean up f16 intermediate
+rm -f "$OUTPUT_PATH/model-f16.gguf"
+
+echo ""
+echo "Done! GGUF file:"
+ls -lh "$OUTPUT_PATH"/*.gguf
 """
+        helper_path = Path(output_path) / "convert_to_gguf.sh"
+        with open(helper_path, "w") as f:
+            f.write(helper_script)
 
-    script_path = Path(output_path) / "convert_to_gguf.sh"
-    with open(script_path, "w") as f:
-        f.write(script_content)
+        print(f"Helper script written to: {helper_path}")
+        print(f"Run: bash {helper_path}")
+        return
 
-    print(f"Helper script written to: {script_path}")
-    print("Run it with: bash " + str(script_path))
+    # Run conversion
+    print("Converting to f16 GGUF...")
+    f16_path = Path(output_path) / "model-f16.gguf"
 
+    subprocess.run([
+        sys.executable, str(convert_script),
+        model_path,
+        "--outfile", str(f16_path),
+        "--outtype", "f16"
+    ], check=True)
 
-def copy_adapters(lora_path: str, output_path: str):
-    """Copy LoRA adapters for PEFT inference."""
-    print(f"Copying LoRA adapters from {lora_path} to {output_path}")
+    # Quantize
+    print(f"Quantizing to {quant_type}...")
+    quantize_bin = llama_cpp_path / "build" / "bin" / "llama-quantize"
 
-    output_dir = Path(output_path)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if not quantize_bin.exists():
+        print("Building llama-quantize...")
+        subprocess.run(["cmake", "-B", "build"], cwd=llama_cpp_path, check=True)
+        subprocess.run(["cmake", "--build", "build", "--target", "llama-quantize", "-j"],
+                       cwd=llama_cpp_path, check=True)
 
-    lora_dir = Path(lora_path)
-    for file in lora_dir.iterdir():
-        if file.is_file():
-            shutil.copy2(file, output_dir / file.name)
+    final_path = Path(output_path) / f"model-{quant_type}.gguf"
+    subprocess.run([
+        str(quantize_bin),
+        str(f16_path),
+        str(final_path),
+        quant_type
+    ], check=True)
 
-    # Write inference script
-    inference_script = f'''#!/usr/bin/env python3
-"""
-Inference script for fine-tuned Qwen3-VL-Asuka model.
-"""
+    # Clean up
+    f16_path.unlink()
 
-import torch
-from transformers import AutoModelForVision2Seq, AutoProcessor
-from peft import PeftModel
-
-MODEL_ID = "Qwen/Qwen3-VL-8B-Thinking"
-LORA_PATH = "{output_path}"
-
-def load_model(device_map="auto", load_in_4bit=True):
-    """Load the fine-tuned model."""
-    from transformers import BitsAndBytesConfig
-
-    if load_in_4bit:
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-        )
-        model = AutoModelForCausalLM.from_pretrained(
-            MODEL_ID,
-            quantization_config=bnb_config,
-            device_map=device_map,
-            trust_remote_code=True,
-        )
-    else:
-        model = AutoModelForCausalLM.from_pretrained(
-            MODEL_ID,
-            torch_dtype=torch.float16,
-            device_map=device_map,
-            trust_remote_code=True,
-        )
-
-    model = PeftModel.from_pretrained(model, LORA_PATH)
-    processor = AutoProcessor.from_pretrained(LORA_PATH, trust_remote_code=True)
-
-    return model, processor
-
-
-def chat(model, processor, messages, max_new_tokens=512):
-    """Generate a response."""
-    text = processor.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True
-    )
-
-    inputs = processor(text, return_tensors="pt").to(model.device)
-
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.9,
-        )
-
-    response = processor.decode(outputs[0], skip_special_tokens=True)
-    return response
-
-
-if __name__ == "__main__":
-    print("Loading model...")
-    model, processor = load_model()
-
-    # System prompt from training data
-    system_prompt = """You are Asuka, a nineteen-year-old woman defined by fire, precision, and restless ambition..."""
-
-    messages = [
-        {{"role": "system", "content": system_prompt}},
-        {{"role": "user", "content": "Hey, how are you today?"}}
-    ]
-
-    print("Generating response...")
-    response = chat(model, processor, messages)
-    print(response)
-'''
-
-    script_path = output_dir / "inference.py"
-    with open(script_path, "w") as f:
-        f.write(inference_script)
-
-    print(f"Inference script written to: {script_path}")
-    print("\nTo run inference:")
-    print(f"  python {script_path}")
+    print(f"\nGGUF file created: {final_path}")
+    print(f"Size: {final_path.stat().st_size / 1024 / 1024 / 1024:.2f} GB")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Export fine-tuned Qwen3-VL model")
+    parser = argparse.ArgumentParser(description="Export JAX-trained model for inference")
     parser.add_argument(
-        "--lora-path", "-l",
+        "--checkpoint", "-c",
         type=str,
         required=True,
-        help="Path to LoRA adapters"
+        help="Path to JAX/EasyDeL checkpoint directory"
     )
     parser.add_argument(
         "--output", "-o",
@@ -279,33 +302,28 @@ def main():
     parser.add_argument(
         "--mode", "-m",
         type=str,
-        choices=["merge", "gguf", "adapters"],
-        default="adapters",
-        help="Export mode: merge (merge LoRA into base), gguf (convert to GGUF), adapters (copy for PEFT)"
+        choices=["merge", "gguf"],
+        default="gguf",
+        help="Export mode: merge (HuggingFace format), gguf (llama.cpp format)"
     )
     parser.add_argument(
-        "--quant-type",
+        "--quant-type", "-q",
         type=str,
-        default="q4_k_m",
-        help="Quantization type for GGUF (default: q4_k_m)"
+        default="Q4_K_M",
+        help="GGUF quantization type (default: Q4_K_M)"
     )
 
     args = parser.parse_args()
 
-    Path(args.output).mkdir(parents=True, exist_ok=True)
-
     if args.mode == "merge":
-        merge_lora(args.lora_path, args.output)
+        merge_and_export_hf(args.checkpoint, args.output)
     elif args.mode == "gguf":
-        # For GGUF, we need to merge first
-        print("Step 1: Merging LoRA adapters...")
+        # First merge to HF format
         merged_path = str(Path(args.output) / "merged")
-        merge_lora(args.lora_path, merged_path)
+        merge_and_export_hf(args.checkpoint, merged_path)
 
-        print("\nStep 2: GGUF conversion...")
+        # Then convert to GGUF
         export_gguf(merged_path, args.output, args.quant_type)
-    elif args.mode == "adapters":
-        copy_adapters(args.lora_path, args.output)
 
     print("\nExport complete!")
 

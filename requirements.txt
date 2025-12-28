@@ -1,23 +1,26 @@
-# Core training dependencies
-torch>=2.1.0
-transformers>=4.40.0
-accelerate>=0.27.0
+# JAX for TPU
+jax[tpu]>=0.4.30
+jaxlib>=0.4.30
+
+# EasyDeL for LoRA training
+easydel>=0.0.80
+
+# JAX ecosystem
+optax>=0.2.0
+flax>=0.8.0
+orbax-checkpoint>=0.5.0
+
+# Data loading
 datasets>=2.18.0
+grain>=0.2.0
 
-# QLoRA dependencies
-peft>=0.10.0
-bitsandbytes>=0.43.0
+# Tokenizer
+transformers>=4.40.0
 
-# Training utilities
-trl>=0.8.0
-scipy
+# Utilities
+numpy>=1.24.0
+tqdm
 
-# Optional: Flash Attention 2 (recommended for A100)
-# Install separately with: pip install flash-attn --no-build-isolation
-# flash-attn>=2.5.0
-
-# Optional: Weights & Biases for experiment tracking
-# wandb
-
-# For GGUF export (install llama.cpp separately)
+# For GGUF export (run on CPU machine after training)
+# torch>=2.1.0
 # See: https://github.com/ggerganov/llama.cpp

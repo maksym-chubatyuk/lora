@@ -70,9 +70,9 @@ OUTPUT_DIR = "output/adapters"
 
 # Training hyperparameters
 MAX_STEPS = 300
-BATCH_SIZE = 4
+BATCH_SIZE = 8  # Increased - we have VRAM headroom
 LEARNING_RATE = 1e-5
-GRADIENT_ACCUMULATION_STEPS = 4
+GRADIENT_ACCUMULATION_STEPS = 2  # Halved to keep effective batch same
 WARMUP_STEPS = 20
 LOGGING_STEPS = 10
 SAVE_STEPS = 100
@@ -144,16 +144,16 @@ def train():
     print(f"  Training examples: {len(dataset['train'])}")
 
     # Load model
-    print("\nLoading model in fp16...")
+    print("\nLoading model in bf16 with Flash Attention 2...")
     model = AutoModelForCausalLM.from_pretrained(
         MODEL,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
-        attn_implementation="sdpa",
+        attn_implementation="flash_attention_2",
     )
 
-    model.gradient_checkpointing_enable()
+    # No gradient checkpointing = faster but more VRAM
     model.enable_input_require_grads()
 
     # Configure LoRA
@@ -169,6 +169,10 @@ def train():
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
+    # Compile for speed (PyTorch 2.0+)
+    print("Compiling model with torch.compile...")
+    model = torch.compile(model)
+
     # Training arguments
     training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
@@ -180,14 +184,13 @@ def train():
         logging_steps=LOGGING_STEPS,
         save_steps=SAVE_STEPS,
         save_total_limit=3,
-        fp16=True,
-        optim="adamw_torch",
+        bf16=True,  # Native on A100
+        optim="adamw_torch_fused",  # Fused optimizer = faster
         lr_scheduler_type="linear",
         report_to="none",
         remove_unused_columns=False,
         dataloader_pin_memory=True,
-        dataloader_num_workers=2,
-        gradient_checkpointing=True,
+        dataloader_num_workers=0,  # Avoid multiprocessing overhead
     )
 
     # Data collator with dynamic padding

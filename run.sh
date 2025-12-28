@@ -21,6 +21,7 @@ if [ ! -d "venv" ]; then
     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
     pip install "transformers>=4.45.0" datasets peft accelerate
     pip install sentencepiece protobuf
+    pip install flash-attn --no-build-isolation
     pip install gguf numpy
 else
     echo "[1/8] Virtual environment exists, activating..."

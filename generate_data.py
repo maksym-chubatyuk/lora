@@ -127,10 +127,9 @@ MOODS = [
 ]
 
 
-def generate_conversation(model, tokenizer, character_desc: str, topic: str, mood: str) -> dict | None:
-    """Generate a single conversation."""
-
-    prompt = f"""You are generating training data for a character-based chatbot.
+def make_prompt(character_desc: str, topic: str, mood: str) -> str:
+    """Create a prompt for conversation generation."""
+    return f"""You are generating training data for a character-based chatbot.
 
 CHARACTER DESCRIPTION:
 {character_desc}
@@ -146,33 +145,14 @@ Generate a realistic conversation between a human user and this character.
 Output ONLY valid JSON in this exact format, nothing else:
 {{"conversations": [{{"from": "human", "value": "user message"}}, {{"from": "gpt", "value": "character response"}}, {{"from": "human", "value": "..."}}, {{"from": "gpt", "value": "..."}}]}}"""
 
-    inputs = tokenizer(prompt, return_tensors="pt", return_token_type_ids=False).to(model.device)
 
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=1024,
-            temperature=0.8,
-            do_sample=True,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-
-    response = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
-
-    # Show model output
-    print("\n" + "-"*60)
-    print(response)
-    print("-"*60)
-
-    # Try to extract JSON from response
+def parse_response(response: str) -> dict | None:
+    """Parse JSON from model response."""
     try:
-        # Find the first JSON object only
         start = response.find('{"conversations"')
         if start == -1:
-            print("  [DEBUG] No JSON found")
             return None
 
-        # Find matching closing brace by counting
         depth = 0
         end = start
         for i, char in enumerate(response[start:]):
@@ -187,20 +167,49 @@ Output ONLY valid JSON in this exact format, nothing else:
         json_str = response[start:end]
         data = json.loads(json_str)
 
-        # Validate structure
-        if "conversations" not in data:
-            print("  [DEBUG] Missing 'conversations' key")
-            return None
-        if len(data["conversations"]) < 2:
-            print("  [DEBUG] Not enough conversation turns")
+        if "conversations" not in data or len(data["conversations"]) < 2:
             return None
 
         return data
-
-    except json.JSONDecodeError as e:
-        print(f"  [DEBUG] JSON parse error: {e}")
-        print(f"  [DEBUG] Attempted to parse: {json_str[:200]}...")
+    except json.JSONDecodeError:
         return None
+
+
+def generate_batch(model, tokenizer, character_desc: str, topics: list, moods: list) -> list:
+    """Generate a batch of conversations."""
+    prompts = [make_prompt(character_desc, t, m) for t, m in zip(topics, moods)]
+
+    # Tokenize with padding
+    inputs = tokenizer(
+        prompts,
+        return_tensors="pt",
+        padding=True,
+        return_token_type_ids=False
+    ).to(model.device)
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=1024,
+            temperature=0.8,
+            do_sample=True,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+
+    # Decode each output
+    results = []
+    for i, output in enumerate(outputs):
+        # Skip the input tokens
+        input_len = (inputs.attention_mask[i] == 1).sum().item()
+        response = tokenizer.decode(output[input_len:], skip_special_tokens=True)
+
+        print(f"\n--- Output {i+1} ({topics[i]}) ---")
+        print(response[:500] + "..." if len(response) > 500 else response)
+
+        parsed = parse_response(response)
+        results.append(parsed)
+
+    return results
 
 
 def main():
@@ -233,6 +242,12 @@ def main():
         "--append",
         action="store_true",
         help="Append to existing file instead of overwriting"
+    )
+    parser.add_argument(
+        "--batch-size", "-b",
+        type=int,
+        default=8,
+        help="Batch size for generation (default: 8)"
     )
 
     args = parser.parse_args()
@@ -269,7 +284,7 @@ def main():
     print(f"Model loaded on {model.device}")
     print()
 
-    print(f"Generating {args.count} conversations...")
+    print(f"Generating {args.count} conversations (batch size: {args.batch_size})...")
     print()
 
     mode = "a" if args.append else "w"
@@ -277,25 +292,32 @@ def main():
     failed = 0
 
     with open(args.output, mode) as f:
-        for i in range(args.count):
-            topic = random.choice(TOPICS)
-            mood = random.choice(MOODS)
+        for batch_start in range(0, args.count, args.batch_size):
+            batch_end = min(batch_start + args.batch_size, args.count)
+            batch_size = batch_end - batch_start
+
+            # Pick random topics and moods for this batch
+            topics = [random.choice(TOPICS) for _ in range(batch_size)]
+            moods = [random.choice(MOODS) for _ in range(batch_size)]
 
             print(f"\n{'='*60}")
-            print(f"[{i+1}/{args.count}] Topic: {topic}")
-            print(f"Mood: {mood}")
+            print(f"Batch [{batch_start+1}-{batch_end}/{args.count}]")
+            print(f"Topics: {topics}")
             print('='*60)
 
-            conv = generate_conversation(model, tokenizer, character_desc, topic, mood)
+            results = generate_batch(model, tokenizer, character_desc, topics, moods)
 
-            if conv:
-                f.write(json.dumps(conv, ensure_ascii=False) + "\n")
-                f.flush()
-                generated += 1
-                print("✓ Saved successfully")
-            else:
-                failed += 1
-                print("✗ Failed to parse JSON")
+            for i, conv in enumerate(results):
+                if conv:
+                    f.write(json.dumps(conv, ensure_ascii=False) + "\n")
+                    generated += 1
+                    print(f"  ✓ [{batch_start+i+1}] Saved")
+                else:
+                    failed += 1
+                    print(f"  ✗ [{batch_start+i+1}] Failed to parse")
+
+            f.flush()
+            print(f"\nProgress: {generated} generated, {failed} failed")
 
     print()
     print(f"Done! Generated: {generated}, Failed: {failed}")

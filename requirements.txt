@@ -1,0 +1,23 @@
+# Core training dependencies
+torch>=2.1.0
+transformers>=4.40.0
+accelerate>=0.27.0
+datasets>=2.18.0
+
+# QLoRA dependencies
+peft>=0.10.0
+bitsandbytes>=0.43.0
+
+# Training utilities
+trl>=0.8.0
+scipy
+
+# Optional: Flash Attention 2 (recommended for A100)
+# Install separately with: pip install flash-attn --no-build-isolation
+# flash-attn>=2.5.0
+
+# Optional: Weights & Biases for experiment tracking
+# wandb
+
+# For GGUF export (install llama.cpp separately)
+# See: https://github.com/ggerganov/llama.cpp

@@ -12,21 +12,16 @@ Usage:
 import argparse
 import json
 import torch
-from pathlib import Path
-from typing import Optional
-
 from datasets import Dataset
 from transformers import (
     AutoModelForVision2Seq,
     AutoProcessor,
-    BitsAndBytesConfig,
     TrainingArguments,
     Trainer,
 )
 from peft import (
     LoraConfig,
     get_peft_model,
-    prepare_model_for_kbit_training,
     TaskType,
 )
 
@@ -48,20 +43,20 @@ DEFAULT_LORA_CONFIG = {
 
 # Default training configuration
 DEFAULT_TRAINING_CONFIG = {
-    "per_device_train_batch_size": 2,
-    "gradient_accumulation_steps": 8,
-    "learning_rate": 2e-4,
+    "per_device_train_batch_size": 4,
+    "gradient_accumulation_steps": 4,
+    "learning_rate": 1e-5,
     "num_train_epochs": 3,
     "max_steps": -1,
     "warmup_ratio": 0.03,
     "logging_steps": 10,
     "save_steps": 100,
     "save_total_limit": 3,
-    "bf16": True,
-    "fp16": False,
+    "bf16": False,
+    "fp16": True,
     "gradient_checkpointing": True,
-    "optim": "paged_adamw_8bit",
-    "lr_scheduler_type": "cosine",
+    "optim": "adamw_torch",
+    "lr_scheduler_type": "linear",
     "report_to": "none",
 }
 
@@ -137,19 +132,19 @@ def main():
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=2,
+        default=4,
         help="Per-device batch size"
     )
     parser.add_argument(
         "--grad-accum",
         type=int,
-        default=8,
+        default=4,
         help="Gradient accumulation steps"
     )
     parser.add_argument(
         "--lr",
         type=float,
-        default=2e-4,
+        default=1e-5,
         help="Learning rate"
     )
     parser.add_argument(
@@ -177,14 +172,6 @@ def main():
     print(f"Training data: {args.data}")
     print(f"Output: {args.output}")
 
-    # 4-bit quantization config
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-    )
-
     # Load processor (tokenizer + image processor)
     print("\nLoading processor...")
     processor = AutoProcessor.from_pretrained(
@@ -195,20 +182,21 @@ def main():
     # Ensure pad token is set
     if processor.tokenizer.pad_token is None:
         processor.tokenizer.pad_token = processor.tokenizer.eos_token
+    processor.tokenizer.padding_side = "right"
 
-    # Load model in 4-bit
-    print("Loading model in 4-bit quantization...")
+    # Load model in fp16
+    print("Loading model in fp16...")
     model = AutoModelForVision2Seq.from_pretrained(
         MODEL_ID,
-        quantization_config=bnb_config,
+        torch_dtype=torch.float16,
         device_map="auto",
         trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
         attn_implementation="sdpa",
     )
 
-    # Prepare for k-bit training
-    model = prepare_model_for_kbit_training(model)
+    # Enable gradient checkpointing to save memory
+    model.gradient_checkpointing_enable()
+    model.enable_input_require_grads()
 
     # Configure LoRA
     print("Configuring LoRA...")
@@ -256,13 +244,14 @@ def main():
         logging_steps=DEFAULT_TRAINING_CONFIG["logging_steps"],
         save_steps=DEFAULT_TRAINING_CONFIG["save_steps"],
         save_total_limit=DEFAULT_TRAINING_CONFIG["save_total_limit"],
-        bf16=DEFAULT_TRAINING_CONFIG["bf16"],
+        fp16=DEFAULT_TRAINING_CONFIG["fp16"],
         gradient_checkpointing=DEFAULT_TRAINING_CONFIG["gradient_checkpointing"],
         optim=DEFAULT_TRAINING_CONFIG["optim"],
         lr_scheduler_type=DEFAULT_TRAINING_CONFIG["lr_scheduler_type"],
         report_to=DEFAULT_TRAINING_CONFIG["report_to"],
         remove_unused_columns=False,
         dataloader_pin_memory=True,
+        dataloader_num_workers=2,
     )
 
     # Create trainer

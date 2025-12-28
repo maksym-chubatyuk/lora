@@ -7,7 +7,7 @@ set -e
 BUCKET="gs://maksym-adapters"
 MODEL_NAME="qwen3-asuka"
 
-echo "=== Qwen3-8B LoRA Training on TPU (JAX/EasyDeL) ==="
+echo "=== Qwen3-8B LoRA Training on TPU (PyTorch XLA) ==="
 echo ""
 
 # Step 1: Install system dependencies (Ubuntu)
@@ -29,26 +29,22 @@ echo ""
 echo "[3/8] Installing Python dependencies..."
 pip install --upgrade pip
 
-echo "  Installing JAX for TPU..."
-pip install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+echo "  Installing PyTorch for TPU..."
+pip install torch~=2.6.0 torch_xla[tpu]~=2.6.0 -f https://storage.googleapis.com/libtpu-releases/index.html
 
-echo "  Installing EasyDeL and JAX ecosystem..."
-pip install easydel optax flax orbax-checkpoint
+echo "  Installing PEFT for LoRA..."
+pip install peft accelerate
 
 echo "  Installing data loading libraries..."
 pip install datasets transformers
 
 echo "  Installing utilities..."
-pip install numpy tqdm
+pip install numpy tqdm gguf
 
-echo "  Installing PyTorch (CPU) for GGUF export..."
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install gguf
-
-# Verify JAX sees TPUs
+# Verify PyTorch XLA sees TPUs
 echo ""
 echo "[4/8] Checking TPU devices..."
-python3 -c "import jax; print(f'JAX backend: {jax.default_backend()}'); print(f'Devices: {jax.devices()}')"
+python3 -c "import torch_xla.core.xla_model as xm; print(f'TPU devices: {xm.get_xla_supported_devices()}')"
 
 # Create output directory
 mkdir -p output

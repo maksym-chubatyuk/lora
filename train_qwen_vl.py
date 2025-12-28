@@ -70,9 +70,9 @@ OUTPUT_DIR = "output/adapters"
 
 # Training hyperparameters
 MAX_STEPS = 300
-BATCH_SIZE = 8  # Increased - we have VRAM headroom
+BATCH_SIZE = 4
 LEARNING_RATE = 1e-5
-GRADIENT_ACCUMULATION_STEPS = 2  # Halved to keep effective batch same
+GRADIENT_ACCUMULATION_STEPS = 4
 WARMUP_STEPS = 20
 LOGGING_STEPS = 10
 SAVE_STEPS = 100
@@ -143,27 +143,17 @@ def train():
     )
     print(f"  Training examples: {len(dataset['train'])}")
 
-    # Load model - try flash attention, fallback to sdpa
-    try:
-        print("\nLoading model in bf16 with Flash Attention 2...")
-        model = AutoModelForCausalLM.from_pretrained(
-            MODEL,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            trust_remote_code=True,
-            attn_implementation="flash_attention_2",
-        )
-    except Exception as e:
-        print(f"Flash Attention not available ({e}), using SDPA...")
-        model = AutoModelForCausalLM.from_pretrained(
-            MODEL,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            trust_remote_code=True,
-            attn_implementation="sdpa",
-        )
+    # Load model
+    print("\nLoading model in fp16...")
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL,
+        torch_dtype=torch.float16,
+        device_map="auto",
+        trust_remote_code=True,
+        attn_implementation="sdpa",
+    )
 
-    # No gradient checkpointing = faster but more VRAM
+    model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
 
     # Configure LoRA
@@ -179,10 +169,6 @@ def train():
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
-    # Compile for speed (PyTorch 2.0+)
-    print("Compiling model with torch.compile...")
-    model = torch.compile(model)
-
     # Training arguments
     training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
@@ -194,13 +180,14 @@ def train():
         logging_steps=LOGGING_STEPS,
         save_steps=SAVE_STEPS,
         save_total_limit=3,
-        bf16=True,  # Native on A100
-        optim="adamw_torch_fused",  # Fused optimizer = faster
+        fp16=True,
+        optim="adamw_torch",
         lr_scheduler_type="linear",
         report_to="none",
         remove_unused_columns=False,
         dataloader_pin_memory=True,
-        dataloader_num_workers=0,  # Avoid multiprocessing overhead
+        dataloader_num_workers=2,
+        gradient_checkpointing=True,
     )
 
     # Data collator with dynamic padding

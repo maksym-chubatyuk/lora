@@ -17,7 +17,7 @@ from typing import Optional
 
 from datasets import Dataset
 from transformers import (
-    AutoModelForCausalLM,
+    AutoModelForVision2Seq,
     AutoProcessor,
     BitsAndBytesConfig,
     TrainingArguments,
@@ -198,13 +198,13 @@ def main():
 
     # Load model in 4-bit
     print("Loading model in 4-bit quantization...")
-    model = AutoModelForCausalLM.from_pretrained(
+    model = AutoModelForVision2Seq.from_pretrained(
         MODEL_ID,
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2",  # Use flash attention if available
+        attn_implementation="sdpa",
     )
 
     # Prepare for k-bit training

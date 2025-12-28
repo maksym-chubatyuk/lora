@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 import torch
-from transformers import AutoModelForCausalLM, AutoProcessor
+from transformers import AutoModelForVision2Seq, AutoProcessor
 from peft import PeftModel
 
 
@@ -37,7 +37,7 @@ def merge_lora(lora_path: str, output_path: str):
     print(f"Loading base model: {MODEL_ID}")
 
     # Load base model in fp16 for merging
-    base_model = AutoModelForCausalLM.from_pretrained(
+    base_model = AutoModelForVision2Seq.from_pretrained(
         MODEL_ID,
         torch_dtype=torch.float16,
         device_map="auto",
@@ -176,7 +176,7 @@ Inference script for fine-tuned Qwen3-VL-Asuka model.
 """
 
 import torch
-from transformers import AutoModelForCausalLM, AutoProcessor
+from transformers import AutoModelForVision2Seq, AutoProcessor
 from peft import PeftModel
 
 MODEL_ID = "Qwen/Qwen3-VL-8B-Thinking"

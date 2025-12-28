@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 """
-QLoRA fine-tuning script for Qwen3-VL-8B-Thinking.
-
-This script fine-tunes only the text generation layers while preserving
-vision capabilities. Designed for A100 40GB.
-
-Usage:
-    python train_qwen_vl.py --data asuka_training_data_qwen.jsonl
+LoRA fine-tuning script for Qwen3-8B.
+Uses dynamic padding for fast training.
 """
 
-import argparse
-import json
+import os
+import sys
+from pathlib import Path
+
 import torch
-from datasets import Dataset
+from datasets import load_dataset
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -26,262 +23,205 @@ from peft import (
 )
 
 
-MODEL_ID = "Qwen/Qwen3-8B"
+class DataCollatorForCausalLM:
+    """Custom data collator with dynamic padding (pads to max in batch, not global max)."""
 
-# Default QLoRA configuration
-DEFAULT_LORA_CONFIG = {
-    "r": 64,
-    "lora_alpha": 128,
-    "lora_dropout": 0.05,
-    "target_modules": [
-        "q_proj", "k_proj", "v_proj", "o_proj",
-        "gate_proj", "up_proj", "down_proj"
-    ],
-    "bias": "none",
-    "task_type": TaskType.CAUSAL_LM,
-}
+    def __init__(self, tokenizer, pad_to_multiple_of=8):
+        self.tokenizer = tokenizer
+        self.pad_to_multiple_of = pad_to_multiple_of
 
-# Default training configuration
-DEFAULT_TRAINING_CONFIG = {
-    "per_device_train_batch_size": 4,
-    "gradient_accumulation_steps": 4,
-    "learning_rate": 1e-5,
-    "num_train_epochs": 3,
-    "max_steps": -1,
-    "warmup_ratio": 0.03,
-    "logging_steps": 10,
-    "save_steps": 100,
-    "save_total_limit": 3,
-    "bf16": False,
-    "fp16": True,
-    "gradient_checkpointing": True,
-    "optim": "adamw_torch",
-    "lr_scheduler_type": "linear",
-    "report_to": "none",
-}
+    def __call__(self, features):
+        # Find max length in batch
+        max_length = max(len(f["input_ids"]) for f in features)
 
+        # Round up to multiple for efficiency
+        if self.pad_to_multiple_of:
+            max_length = ((max_length + self.pad_to_multiple_of - 1)
+                          // self.pad_to_multiple_of * self.pad_to_multiple_of)
 
-def load_dataset(data_path: str) -> Dataset:
-    """Load and prepare the dataset."""
-    data = []
-    with open(data_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                data.append(json.loads(line))
+        batch = {"input_ids": [], "attention_mask": [], "labels": []}
 
-    return Dataset.from_list(data)
+        for feature in features:
+            input_ids = feature["input_ids"]
+            labels = feature["labels"]
+            seq_len = len(input_ids)
+            padding_len = max_length - seq_len
+
+            # Pad input_ids with pad_token_id
+            padded_input_ids = input_ids + [self.tokenizer.pad_token_id] * padding_len
+            # Attention mask: 1 for real tokens, 0 for padding
+            attention_mask = [1] * seq_len + [0] * padding_len
+            # Labels: -100 for padding (ignored in loss)
+            padded_labels = labels + [-100] * padding_len
+
+            batch["input_ids"].append(padded_input_ids)
+            batch["attention_mask"].append(attention_mask)
+            batch["labels"].append(padded_labels)
+
+        # Convert to tensors
+        batch = {k: torch.tensor(v) for k, v in batch.items()}
+        return batch
 
 
-def format_chat(example: dict, tokenizer) -> dict:
-    """Format a single example for training."""
-    messages = example["messages"]
+# Configuration
+MODEL = "Qwen/Qwen3-8B"
+DATA_FILE = "asuka_training_data_qwen.jsonl"
+OUTPUT_DIR = "output/adapters"
 
-    # Apply chat template
-    text = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=False
-    )
+# Training hyperparameters
+MAX_STEPS = 300
+BATCH_SIZE = 4
+LEARNING_RATE = 1e-5
+GRADIENT_ACCUMULATION_STEPS = 4
+WARMUP_STEPS = 20
+LOGGING_STEPS = 10
+SAVE_STEPS = 100
+MAX_SEQ_LENGTH = 2048
 
-    return {"text": text}
-
-
-def tokenize_function(examples: dict, tokenizer, max_length: int) -> dict:
-    """Tokenize examples for training."""
-    tokenized = tokenizer(
-        examples["text"],
-        truncation=True,
-        max_length=max_length,
-        padding="max_length",
-        return_tensors=None,
-    )
-
-    # For causal LM, labels = input_ids
-    tokenized["labels"] = tokenized["input_ids"].copy()
-
-    return tokenized
+# LoRA Configuration
+LORA_R = 64
+LORA_ALPHA = 128
+LORA_DROPOUT = 0.05
+LORA_TARGET_MODULES = [
+    "q_proj", "k_proj", "v_proj", "o_proj",
+    "gate_proj", "up_proj", "down_proj",
+]
 
 
-def main():
-    parser = argparse.ArgumentParser(description="QLoRA fine-tuning for Qwen3-VL")
-    parser.add_argument(
-        "--data", "-d",
-        type=str,
-        required=True,
-        help="Path to training data (Qwen format JSONL)"
-    )
-    parser.add_argument(
-        "--output", "-o",
-        type=str,
-        default="./qwen3-vl-asuka-lora",
-        help="Output directory for LoRA adapters"
-    )
-    parser.add_argument(
-        "--max-length",
-        type=int,
-        default=2048,
-        help="Maximum sequence length"
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=3,
-        help="Number of training epochs"
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=4,
-        help="Per-device batch size"
-    )
-    parser.add_argument(
-        "--grad-accum",
-        type=int,
-        default=4,
-        help="Gradient accumulation steps"
-    )
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=1e-5,
-        help="Learning rate"
-    )
-    parser.add_argument(
-        "--lora-r",
-        type=int,
-        default=64,
-        help="LoRA rank"
-    )
-    parser.add_argument(
-        "--lora-alpha",
-        type=int,
-        default=128,
-        help="LoRA alpha"
-    )
-    parser.add_argument(
-        "--resume",
-        type=str,
-        default=None,
-        help="Resume from checkpoint"
-    )
+def train():
+    """Run LoRA fine-tuning."""
+    print("=" * 50)
+    print("LoRA Fine-tuning")
+    print("=" * 50)
 
-    args = parser.parse_args()
+    # Check CUDA
+    if not torch.cuda.is_available():
+        print("\nError: CUDA not available.")
+        sys.exit(1)
 
-    print(f"Loading model: {MODEL_ID}")
-    print(f"Training data: {args.data}")
-    print(f"Output: {args.output}")
+    print(f"\nGPU: {torch.cuda.get_device_name(0)}")
+    print(f"Model: {MODEL}")
+    print(f"Data: {DATA_FILE}")
+    print(f"Output: {OUTPUT_DIR}")
+    print(f"Max steps: {MAX_STEPS}")
+    print(f"Batch size: {BATCH_SIZE}")
+    print(f"LoRA rank: {LORA_R}")
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # Load tokenizer
     print("\nLoading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(
-        MODEL_ID,
-        trust_remote_code=True,
-    )
-
-    # Ensure pad token is set
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
+    tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
-    # Load model in fp16
-    print("Loading model in fp16...")
+    # Load dataset
+    print("Loading training data...")
+    dataset = load_dataset("json", data_files={"train": DATA_FILE})
+
+    def format_and_tokenize(example):
+        """Format and tokenize in one step, NO padding here."""
+        messages = example["messages"]
+        text = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=False
+        )
+        result = tokenizer(
+            text,
+            truncation=True,
+            max_length=MAX_SEQ_LENGTH,
+            padding=False,  # NO PADDING - collator handles it
+        )
+        result["labels"] = result["input_ids"].copy()
+        return result
+
+    dataset = dataset.map(
+        format_and_tokenize,
+        remove_columns=["messages"],
+        desc="Tokenizing"
+    )
+    print(f"  Training examples: {len(dataset['train'])}")
+
+    # Load model
+    print("\nLoading model in fp16...")
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
+        MODEL,
         torch_dtype=torch.float16,
         device_map="auto",
         trust_remote_code=True,
         attn_implementation="sdpa",
     )
 
-    # Enable gradient checkpointing to save memory
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
 
     # Configure LoRA
-    print("Configuring LoRA...")
     lora_config = LoraConfig(
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=DEFAULT_LORA_CONFIG["lora_dropout"],
-        target_modules=DEFAULT_LORA_CONFIG["target_modules"],
-        bias=DEFAULT_LORA_CONFIG["bias"],
-        task_type=DEFAULT_LORA_CONFIG["task_type"],
+        r=LORA_R,
+        lora_alpha=LORA_ALPHA,
+        lora_dropout=LORA_DROPOUT,
+        target_modules=LORA_TARGET_MODULES,
+        bias="none",
+        task_type=TaskType.CAUSAL_LM,
     )
 
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
-    # Load and prepare dataset
-    print("\nLoading dataset...")
-    dataset = load_dataset(args.data)
-    print(f"  Total examples: {len(dataset)}")
-
-    # Format with chat template
-    print("Formatting with chat template...")
-    dataset = dataset.map(
-        lambda x: format_chat(x, tokenizer),
-        desc="Formatting"
-    )
-
-    # Tokenize
-    print("Tokenizing...")
-    dataset = dataset.map(
-        lambda x: tokenize_function(x, tokenizer, args.max_length),
-        batched=True,
-        remove_columns=dataset.column_names,
-        desc="Tokenizing"
-    )
-
     # Training arguments
     training_args = TrainingArguments(
-        output_dir=args.output,
-        per_device_train_batch_size=args.batch_size,
-        gradient_accumulation_steps=args.grad_accum,
-        learning_rate=args.lr,
-        num_train_epochs=args.epochs,
-        warmup_ratio=DEFAULT_TRAINING_CONFIG["warmup_ratio"],
-        logging_steps=DEFAULT_TRAINING_CONFIG["logging_steps"],
-        save_steps=DEFAULT_TRAINING_CONFIG["save_steps"],
-        save_total_limit=DEFAULT_TRAINING_CONFIG["save_total_limit"],
-        fp16=DEFAULT_TRAINING_CONFIG["fp16"],
-        gradient_checkpointing=DEFAULT_TRAINING_CONFIG["gradient_checkpointing"],
-        optim=DEFAULT_TRAINING_CONFIG["optim"],
-        lr_scheduler_type=DEFAULT_TRAINING_CONFIG["lr_scheduler_type"],
-        report_to=DEFAULT_TRAINING_CONFIG["report_to"],
+        output_dir=OUTPUT_DIR,
+        max_steps=MAX_STEPS,
+        per_device_train_batch_size=BATCH_SIZE,
+        gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
+        learning_rate=LEARNING_RATE,
+        warmup_steps=WARMUP_STEPS,
+        logging_steps=LOGGING_STEPS,
+        save_steps=SAVE_STEPS,
+        save_total_limit=3,
+        fp16=True,
+        optim="adamw_torch",
+        lr_scheduler_type="linear",
+        report_to="none",
         remove_unused_columns=False,
         dataloader_pin_memory=True,
         dataloader_num_workers=2,
+        gradient_checkpointing=True,
     )
+
+    # Data collator with dynamic padding
+    data_collator = DataCollatorForCausalLM(tokenizer=tokenizer)
 
     # Create trainer
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=dataset,
-        tokenizer=tokenizer,
+        train_dataset=dataset["train"],
+        data_collator=data_collator,
     )
 
     # Train
-    print("\n" + "="*50)
+    print("\n" + "-" * 50)
     print("Starting training...")
-    print("="*50)
+    print("-" * 50 + "\n")
 
-    if args.resume:
-        trainer.train(resume_from_checkpoint=args.resume)
-    else:
+    try:
         trainer.train()
 
-    # Save final model
-    print("\nSaving LoRA adapters...")
-    trainer.save_model(args.output)
-    tokenizer.save_pretrained(args.output)
+        print("\nSaving adapters...")
+        model.save_pretrained(OUTPUT_DIR)
+        tokenizer.save_pretrained(OUTPUT_DIR)
 
-    print(f"\nTraining complete! LoRA adapters saved to: {args.output}")
-    print("\nNext steps:")
-    print("  1. Run export_model.py to merge and quantize for inference")
-    print("  2. Or load directly with PEFT for inference")
+        print("\n" + "=" * 50)
+        print("Training complete!")
+        print(f"Adapters saved to: {OUTPUT_DIR}")
+        print("=" * 50)
+
+    except KeyboardInterrupt:
+        print("\n\nTraining interrupted.")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
-    main()
+    train()

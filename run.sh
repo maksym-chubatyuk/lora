@@ -36,8 +36,8 @@ echo "[3/8] Converting training data to Qwen format..."
 python3 convert_data.py -i asuka_training_data.jsonl -o asuka_training_data_qwen.jsonl
 
 echo ""
-echo "[4/8] Starting QLoRA training..."
-python3 train_qwen_vl.py --data asuka_training_data_qwen.jsonl --output ./output/adapters
+echo "[4/8] Starting LoRA training..."
+python3 train_qwen_vl.py
 
 echo ""
 echo "[5/8] Merging LoRA adapters into base model..."

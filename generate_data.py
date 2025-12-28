@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 
 # Model to use
@@ -251,12 +251,19 @@ def main():
     print("(This will download ~70GB on first run)")
 
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+
+    # 4-bit quantization to fit 36B on A100 40GB (~20GB VRAM)
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_quant_type="nf4",
+    )
+
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
-        torch_dtype=torch.float16,
+        quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
-        load_in_8bit=True,  # 8-bit to fit on A100 40GB
     )
 
     print(f"Model loaded on {model.device}")

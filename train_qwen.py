@@ -128,8 +128,7 @@ def main():
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
-    # Enable gradient checkpointing to save memory
-    model.gradient_checkpointing_enable()
+    # Note: gradient checkpointing doesn't work with TPU XLA
 
     # Move to TPU
     print("Moving model to TPU...")

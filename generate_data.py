@@ -146,7 +146,7 @@ Generate a realistic conversation between a human user and this character.
 Output ONLY valid JSON in this exact format, nothing else:
 {{"conversations": [{{"from": "human", "value": "user message"}}, {{"from": "gpt", "value": "character response"}}, {{"from": "human", "value": "..."}}, {{"from": "gpt", "value": "..."}}]}}"""
 
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    inputs = tokenizer(prompt, return_tensors="pt", return_token_type_ids=False).to(model.device)
 
     with torch.no_grad():
         outputs = model.generate(

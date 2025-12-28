@@ -101,7 +101,7 @@ def train_fn(index):
 
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float32,  # FSDP requires fp32, compute_dtype handles bf16
         low_cpu_mem_usage=True,
         trust_remote_code=True,
     )

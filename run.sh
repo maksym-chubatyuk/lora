@@ -15,30 +15,37 @@ echo "[1/8] Installing system dependencies..."
 sudo apt-get update -qq
 sudo apt-get install -y -qq python3.10-venv python3-pip cmake build-essential
 
-# Step 2: Setup Python environment
-echo ""
-echo "[2/8] Setting up Python environment..."
+# Step 2: Create virtual environment
+if [ ! -d "venv" ]; then
+    echo ""
+    echo "[2/8] Creating virtual environment..."
+    python3 -m venv venv
+    source venv/bin/activate
 
-# Use pip cache if available
-CACHE_DIR="$HOME/pip_cache"
-mkdir -p "$CACHE_DIR"
+    pip install --upgrade pip
 
-# Check if packages already installed
-if python3 -c "import torch_xla" 2>/dev/null; then
-    echo "  Dependencies already installed, skipping..."
-else
-    echo "  Installing PyTorch for TPU (this takes a while first time)..."
-    pip install --cache-dir="$CACHE_DIR" torch~=2.6.0 torch_xla[tpu]~=2.6.0 \
+    echo "  Installing PyTorch for TPU..."
+    pip install torch~=2.6.0 torch_xla[tpu]~=2.6.0 \
         -f https://storage.googleapis.com/libtpu-releases/index.html
 
-    echo "  Installing PEFT for LoRA..."
-    pip install --cache-dir="$CACHE_DIR" peft accelerate
+    echo "  Installing transformers..."
+    pip install transformers
 
-    echo "  Installing data loading libraries..."
-    pip install --cache-dir="$CACHE_DIR" datasets transformers
+    echo "  Installing PEFT..."
+    pip install peft
+
+    echo "  Installing accelerate..."
+    pip install accelerate
+
+    echo "  Installing datasets..."
+    pip install datasets
 
     echo "  Installing utilities..."
-    pip install --cache-dir="$CACHE_DIR" numpy tqdm gguf
+    pip install numpy tqdm gguf
+else
+    echo ""
+    echo "[2/8] Virtual environment exists, activating..."
+    source venv/bin/activate
 fi
 
 # Verify PyTorch XLA sees TPUs

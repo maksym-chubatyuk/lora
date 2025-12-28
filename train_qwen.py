@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 LoRA fine-tuning script for Qwen3-8B using PyTorch on TPU.
-Uses torch_xla for TPU support and PEFT for LoRA.
+Single-process version that works with limited TPU memory.
 
 Usage:
     python train_qwen.py
@@ -12,12 +12,9 @@ import sys
 from pathlib import Path
 
 import torch
-import torch_xla
 import torch_xla.core.xla_model as xm
-import torch_xla.distributed.parallel_loader as pl
-import torch_xla.distributed.xla_multiprocessing as xmp
 
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model, TaskType
 from datasets import load_dataset
 from torch.utils.data import DataLoader
@@ -31,17 +28,16 @@ OUTPUT_DIR = "output/checkpoints"
 
 # Training hyperparameters
 NUM_EPOCHS = 3
-BATCH_SIZE = 4
+BATCH_SIZE = 1  # Small batch for memory
 LEARNING_RATE = 2e-5
-WARMUP_STEPS = 100
-MAX_SEQ_LENGTH = 1024
+MAX_SEQ_LENGTH = 512  # Reduced for memory
 LOGGING_STEPS = 10
-SAVE_STEPS = 200
-GRADIENT_ACCUMULATION = 4
+SAVE_STEPS = 100
+GRADIENT_ACCUMULATION = 16  # Accumulate more to compensate small batch
 
 # LoRA configuration
-LORA_R = 64
-LORA_ALPHA = 128
+LORA_R = 32  # Reduced rank for memory
+LORA_ALPHA = 64
 LORA_DROPOUT = 0.05
 LORA_TARGET_MODULES = [
     "q_proj", "k_proj", "v_proj", "o_proj",
@@ -80,8 +76,6 @@ class ChatDataset(torch.utils.data.Dataset):
         input_ids = encoded["input_ids"].squeeze()
         attention_mask = encoded["attention_mask"].squeeze()
         labels = input_ids.clone()
-
-        # Mask padding tokens in labels
         labels[labels == self.tokenizer.pad_token_id] = -100
 
         return {
@@ -91,28 +85,37 @@ class ChatDataset(torch.utils.data.Dataset):
         }
 
 
-def train_fn(index):
-    """Training function for each TPU core."""
+def main():
+    print("=" * 60)
+    print("PyTorch + TPU XLA LoRA Fine-tuning")
+    print("=" * 60)
+
+    # Get TPU device
     device = xm.xla_device()
-    print(f"[Core {index}] Using device: {device}")
+    print(f"\nUsing device: {device}")
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # Load tokenizer
-    print(f"[Core {index}] Loading tokenizer...")
+    print(f"\nLoading tokenizer: {MODEL_ID}")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
-    # Load model
-    print(f"[Core {index}] Loading model...")
+    # Load model in lower precision
+    print(f"Loading model: {MODEL_ID}")
+    print("This may take a few minutes...")
+
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
         torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True,
         trust_remote_code=True,
     )
 
     # Configure LoRA
-    print(f"[Core {index}] Configuring LoRA...")
+    print("Configuring LoRA...")
     lora_config = LoraConfig(
         r=LORA_R,
         lora_alpha=LORA_ALPHA,
@@ -125,33 +128,30 @@ def train_fn(index):
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
+    # Enable gradient checkpointing to save memory
+    model.gradient_checkpointing_enable()
+
     # Move to TPU
+    print("Moving model to TPU...")
     model = model.to(device)
 
     # Load dataset
-    print(f"[Core {index}] Loading dataset...")
+    print(f"Loading dataset from {DATA_FILE}...")
     raw_dataset = load_dataset("json", data_files={"train": DATA_FILE})["train"]
-
     dataset = ChatDataset(raw_dataset, tokenizer, MAX_SEQ_LENGTH)
-
-    # Create sampler for distributed training
-    sampler = torch.utils.data.distributed.DistributedSampler(
-        dataset,
-        num_replicas=xm.xrt_world_size(),
-        rank=xm.get_ordinal(),
-        shuffle=True,
-    )
 
     dataloader = DataLoader(
         dataset,
         batch_size=BATCH_SIZE,
-        sampler=sampler,
+        shuffle=True,
         num_workers=0,
         drop_last=True,
     )
 
-    # Wrap with parallel loader for TPU
-    para_loader = pl.ParallelLoader(dataloader, [device])
+    print(f"Training examples: {len(dataset)}")
+    print(f"Batch size: {BATCH_SIZE}")
+    print(f"Gradient accumulation: {GRADIENT_ACCUMULATION}")
+    print(f"Effective batch size: {BATCH_SIZE * GRADIENT_ACCUMULATION}")
 
     # Optimizer
     optimizer = torch.optim.AdamW(
@@ -160,38 +160,26 @@ def train_fn(index):
         weight_decay=0.01,
     )
 
-    # Learning rate scheduler
-    num_training_steps = len(dataloader) * NUM_EPOCHS // GRADIENT_ACCUMULATION
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=num_training_steps,
-        eta_min=LEARNING_RATE * 0.1,
-    )
-
     # Training loop
+    print("\n" + "-" * 60)
+    print("Starting training...")
+    print("-" * 60 + "\n")
+
     model.train()
     global_step = 0
     total_loss = 0.0
+    optimizer.zero_grad()
 
     for epoch in range(NUM_EPOCHS):
-        sampler.set_epoch(epoch)
-        per_device_loader = para_loader.per_device_loader(device)
+        print(f"\n[Epoch {epoch + 1}/{NUM_EPOCHS}]")
 
-        if index == 0:
-            print(f"\n[Epoch {epoch + 1}/{NUM_EPOCHS}]")
-
-        progress_bar = tqdm(
-            per_device_loader,
-            desc=f"Epoch {epoch + 1}",
-            disable=(index != 0),
-        )
-
-        optimizer.zero_grad()
+        progress_bar = tqdm(dataloader, desc=f"Epoch {epoch + 1}")
 
         for step, batch in enumerate(progress_bar):
-            input_ids = batch["input_ids"]
-            attention_mask = batch["attention_mask"]
-            labels = batch["labels"]
+            # Move batch to TPU
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            labels = batch["labels"].to(device)
 
             outputs = model(
                 input_ids=input_ids,
@@ -206,52 +194,33 @@ def train_fn(index):
 
             if (step + 1) % GRADIENT_ACCUMULATION == 0:
                 xm.optimizer_step(optimizer)
-                scheduler.step()
                 optimizer.zero_grad()
                 global_step += 1
 
                 # Logging
-                if global_step % LOGGING_STEPS == 0 and index == 0:
-                    avg_loss = total_loss / LOGGING_STEPS
-                    progress_bar.set_postfix({"loss": f"{avg_loss:.4f}"})
+                if global_step % LOGGING_STEPS == 0:
+                    avg_loss = total_loss / (LOGGING_STEPS * GRADIENT_ACCUMULATION)
+                    progress_bar.set_postfix({"loss": f"{avg_loss:.4f}", "step": global_step})
                     total_loss = 0.0
 
                 # Save checkpoint
-                if global_step % SAVE_STEPS == 0 and index == 0:
+                if global_step % SAVE_STEPS == 0:
                     save_path = Path(OUTPUT_DIR) / f"step_{global_step}"
                     save_path.mkdir(parents=True, exist_ok=True)
-
-                    # Save only on main process
-                    xm.save(model.state_dict(), save_path / "adapter_model.bin")
                     model.save_pretrained(save_path)
                     tokenizer.save_pretrained(save_path)
                     print(f"\nSaved checkpoint to {save_path}")
 
     # Final save
-    if index == 0:
-        final_path = Path(OUTPUT_DIR) / "final"
-        final_path.mkdir(parents=True, exist_ok=True)
-        xm.save(model.state_dict(), final_path / "adapter_model.bin")
-        model.save_pretrained(final_path)
-        tokenizer.save_pretrained(final_path)
-        print(f"\nTraining complete! Model saved to {final_path}")
+    final_path = Path(OUTPUT_DIR) / "final"
+    final_path.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(final_path)
+    tokenizer.save_pretrained(final_path)
 
-
-def main():
+    print("\n" + "=" * 60)
+    print("Training complete!")
+    print(f"Model saved to {final_path}")
     print("=" * 60)
-    print("PyTorch + TPU XLA LoRA Fine-tuning")
-    print("=" * 60)
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    print(f"\nModel: {MODEL_ID}")
-    print(f"LoRA rank: {LORA_R}")
-    print(f"Batch size per core: {BATCH_SIZE}")
-    print(f"Gradient accumulation: {GRADIENT_ACCUMULATION}")
-    print()
-
-    # Launch distributed training (nprocs=None uses all available TPU devices)
-    xmp.spawn(train_fn, args=(), nprocs=None)
 
 
 if __name__ == "__main__":

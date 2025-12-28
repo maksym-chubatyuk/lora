@@ -244,19 +244,14 @@ def main():
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # Get number of TPU cores
-    num_cores = 4  # Your 4 TPU setup
-
-    print(f"\nStarting training on {num_cores} TPU cores...")
-    print(f"Model: {MODEL_ID}")
+    print(f"\nModel: {MODEL_ID}")
     print(f"LoRA rank: {LORA_R}")
     print(f"Batch size per core: {BATCH_SIZE}")
     print(f"Gradient accumulation: {GRADIENT_ACCUMULATION}")
-    print(f"Effective batch size: {BATCH_SIZE * num_cores * GRADIENT_ACCUMULATION}")
     print()
 
-    # Launch distributed training
-    xmp.spawn(train_fn, args=(), nprocs=num_cores)
+    # Launch distributed training (nprocs=None uses all available TPU devices)
+    xmp.spawn(train_fn, args=(), nprocs=None)
 
 
 if __name__ == "__main__":

@@ -27,23 +27,23 @@ source venv/bin/activate
 # Step 3: Install Python dependencies
 echo ""
 echo "[3/8] Installing Python dependencies..."
-pip install --upgrade pip -q
+pip install --upgrade pip
 
-# JAX for TPU
-pip install -q jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+echo "  Installing JAX for TPU..."
+pip install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
-# EasyDeL and JAX ecosystem
-pip install -q easydel optax flax orbax-checkpoint
+echo "  Installing EasyDeL and JAX ecosystem..."
+pip install easydel optax flax orbax-checkpoint
 
-# Data loading
-pip install -q datasets transformers
+echo "  Installing data loading libraries..."
+pip install datasets transformers
 
-# Utilities
-pip install -q numpy tqdm
+echo "  Installing utilities..."
+pip install numpy tqdm
 
-# For GGUF export
-pip install -q torch --index-url https://download.pytorch.org/whl/cpu
-pip install -q gguf
+echo "  Installing PyTorch (CPU) for GGUF export..."
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install gguf
 
 # Verify JAX sees TPUs
 echo ""

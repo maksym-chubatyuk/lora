@@ -19,8 +19,8 @@ if [ ! -d "venv" ]; then
     echo "[2/8] Installing dependencies..."
     pip install --upgrade pip
     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-    pip install "transformers>=4.45.0" datasets peft accelerate bitsandbytes
-    pip install sentencepiece protobuf qwen-vl-utils
+    pip install "transformers>=4.45.0" datasets peft accelerate
+    pip install sentencepiece protobuf
     pip install gguf numpy
 else
     echo "[1/8] Virtual environment exists, activating..."
@@ -69,19 +69,10 @@ python3 llama.cpp/convert_hf_to_gguf.py output/merged --outfile output/model-f16
 # Clean up f16 intermediate
 rm -f output/model-f16.gguf
 
-# Check for vision projector
-if ls output/*mmproj*.gguf 1>/dev/null 2>&1; then
-    mv output/*mmproj*.gguf output/mmproj-model.gguf 2>/dev/null || true
-fi
-
 echo ""
 echo "[8/8] Uploading to GCS..."
 gsutil mb $BUCKET 2>/dev/null || true
 gsutil cp output/model.gguf $BUCKET/${MODEL_NAME}.gguf
-
-if [ -f "output/mmproj-model.gguf" ]; then
-    gsutil cp output/mmproj-model.gguf $BUCKET/${MODEL_NAME}-mmproj.gguf
-fi
 
 echo ""
 echo "=== Complete! ==="
@@ -91,6 +82,3 @@ ls -lh output/*.gguf
 echo ""
 echo "Download with:"
 echo "  gsutil cp $BUCKET/${MODEL_NAME}.gguf ."
-if [ -f "output/mmproj-model.gguf" ]; then
-    echo "  gsutil cp $BUCKET/${MODEL_NAME}-mmproj.gguf ."
-fi

@@ -25,11 +25,11 @@ import sys
 from pathlib import Path
 
 import torch
-from transformers import AutoModelForVision2Seq, AutoProcessor
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
 
-MODEL_ID = "Qwen/Qwen3-VL-8B-Thinking"
+MODEL_ID = "Qwen/Qwen3-8B"
 
 
 def merge_lora(lora_path: str, output_path: str):
@@ -37,7 +37,7 @@ def merge_lora(lora_path: str, output_path: str):
     print(f"Loading base model: {MODEL_ID}")
 
     # Load base model in fp16 for merging
-    base_model = AutoModelForVision2Seq.from_pretrained(
+    base_model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
         torch_dtype=torch.float16,
         device_map="auto",
@@ -53,9 +53,9 @@ def merge_lora(lora_path: str, output_path: str):
     print(f"Saving merged model to: {output_path}")
     model.save_pretrained(output_path, safe_serialization=True)
 
-    # Also save processor
-    processor = AutoProcessor.from_pretrained(lora_path, trust_remote_code=True)
-    processor.save_pretrained(output_path)
+    # Also save tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(lora_path, trust_remote_code=True)
+    tokenizer.save_pretrained(output_path)
 
     print("Merge complete!")
     return output_path

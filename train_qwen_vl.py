@@ -14,8 +14,8 @@ import json
 import torch
 from datasets import Dataset
 from transformers import (
-    AutoModelForVision2Seq,
-    AutoProcessor,
+    AutoModelForCausalLM,
+    AutoTokenizer,
     TrainingArguments,
     Trainer,
 )
@@ -26,7 +26,7 @@ from peft import (
 )
 
 
-MODEL_ID = "Qwen/Qwen3-VL-8B-Thinking"
+MODEL_ID = "Qwen/Qwen3-8B"
 
 # Default QLoRA configuration
 DEFAULT_LORA_CONFIG = {
@@ -73,12 +73,12 @@ def load_dataset(data_path: str) -> Dataset:
     return Dataset.from_list(data)
 
 
-def format_chat(example: dict, processor) -> dict:
+def format_chat(example: dict, tokenizer) -> dict:
     """Format a single example for training."""
     messages = example["messages"]
 
     # Apply chat template
-    text = processor.apply_chat_template(
+    text = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=False
@@ -87,9 +87,9 @@ def format_chat(example: dict, processor) -> dict:
     return {"text": text}
 
 
-def tokenize_function(examples: dict, processor, max_length: int) -> dict:
+def tokenize_function(examples: dict, tokenizer, max_length: int) -> dict:
     """Tokenize examples for training."""
-    tokenized = processor(
+    tokenized = tokenizer(
         examples["text"],
         truncation=True,
         max_length=max_length,
@@ -172,21 +172,21 @@ def main():
     print(f"Training data: {args.data}")
     print(f"Output: {args.output}")
 
-    # Load processor (tokenizer + image processor)
-    print("\nLoading processor...")
-    processor = AutoProcessor.from_pretrained(
+    # Load tokenizer
+    print("\nLoading tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(
         MODEL_ID,
         trust_remote_code=True,
     )
 
     # Ensure pad token is set
-    if processor.tokenizer.pad_token is None:
-        processor.tokenizer.pad_token = processor.tokenizer.eos_token
-    processor.tokenizer.padding_side = "right"
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
 
     # Load model in fp16
     print("Loading model in fp16...")
-    model = AutoModelForVision2Seq.from_pretrained(
+    model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
         torch_dtype=torch.float16,
         device_map="auto",
@@ -220,14 +220,14 @@ def main():
     # Format with chat template
     print("Formatting with chat template...")
     dataset = dataset.map(
-        lambda x: format_chat(x, processor),
+        lambda x: format_chat(x, tokenizer),
         desc="Formatting"
     )
 
     # Tokenize
     print("Tokenizing...")
     dataset = dataset.map(
-        lambda x: tokenize_function(x, processor.tokenizer, args.max_length),
+        lambda x: tokenize_function(x, tokenizer, args.max_length),
         batched=True,
         remove_columns=dataset.column_names,
         desc="Tokenizing"
@@ -259,7 +259,7 @@ def main():
         model=model,
         args=training_args,
         train_dataset=dataset,
-        tokenizer=processor.tokenizer,
+        tokenizer=tokenizer,
     )
 
     # Train
@@ -275,7 +275,7 @@ def main():
     # Save final model
     print("\nSaving LoRA adapters...")
     trainer.save_model(args.output)
-    processor.save_pretrained(args.output)
+    tokenizer.save_pretrained(args.output)
 
     print(f"\nTraining complete! LoRA adapters saved to: {args.output}")
     print("\nNext steps:")

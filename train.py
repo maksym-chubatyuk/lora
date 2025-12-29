@@ -74,8 +74,8 @@ OUTPUT_DIR = "output/adapters"
 
 # Training hyperparameters
 MAX_STEPS = 500
-BATCH_SIZE = 8                   # Increased for better GPU utilization
-GRADIENT_ACCUMULATION_STEPS = 2  # Effective batch size = 16
+BATCH_SIZE = 6                   # Balance between speed and memory
+GRADIENT_ACCUMULATION_STEPS = 2  # Effective batch size = 12
 LEARNING_RATE = 2e-5
 WARMUP_STEPS = 30
 LOGGING_STEPS = 10
@@ -202,8 +202,8 @@ def train():
         attn_implementation="sdpa",  # Scaled-dot-product attention for speed
     )
 
-    # Disable gradient checkpointing for speed (we have VRAM headroom)
-    # model.gradient_checkpointing_enable()
+    # Enable gradient checkpointing to save memory
+    model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
 
     # Configure LoRA
@@ -239,7 +239,7 @@ def train():
         dataloader_pin_memory=True,
         dataloader_num_workers=8,
         dataloader_prefetch_factor=4,
-        gradient_checkpointing=False,
+        gradient_checkpointing=True,
     )
 
     # Data collator

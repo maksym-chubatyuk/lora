@@ -12,14 +12,14 @@ import subprocess
 from pathlib import Path
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForVision2Seq, AutoProcessor
 from peft import PeftModel
 
 # =============================================================================
 # Configuration
 # =============================================================================
 
-MODEL = "Qwen/Qwen3-4B-Instruct-2507"
+MODEL = "Qwen/Qwen3-VL-8B-Instruct"
 ADAPTER_PATH = "output/adapters"
 MERGED_PATH = "output/merged_bf16"
 GGUF_PATH = "output/model-bf16.gguf"
@@ -68,7 +68,7 @@ def merge_adapters():
     print(f"\nLoading base model in bf16: {MODEL}")
     print("  This may take a few minutes...")
 
-    base_model = AutoModelForCausalLM.from_pretrained(
+    base_model = AutoModelForVision2Seq.from_pretrained(
         MODEL,
         torch_dtype=torch.bfloat16,
         device_map="auto",
@@ -87,10 +87,10 @@ def merge_adapters():
     print(f"\nSaving merged model to: {MERGED_PATH}")
     model.save_pretrained(MERGED_PATH)
 
-    # Also save tokenizer
-    print("Saving tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
-    tokenizer.save_pretrained(MERGED_PATH)
+    # Also save processor
+    print("Saving processor...")
+    processor = AutoProcessor.from_pretrained(MODEL, trust_remote_code=True)
+    processor.save_pretrained(MERGED_PATH)
 
     print("\nMerge complete!")
 

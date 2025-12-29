@@ -12,8 +12,8 @@ from pathlib import Path
 import torch
 from datasets import load_dataset
 from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
+    AutoModelForVision2Seq,
+    AutoProcessor,
     TrainingArguments,
     Trainer,
 )
@@ -68,13 +68,13 @@ class DataCollatorForCausalLM:
 # Configuration
 # =============================================================================
 
-MODEL = "Qwen/Qwen3-4B-Instruct-2507"
+MODEL = "Qwen/Qwen3-VL-8B-Instruct"
 DATA_FILE = "asuka_training_data.jsonl"
 OUTPUT_DIR = "output/adapters"
 
 # Training hyperparameters
 MAX_STEPS = 300
-BATCH_SIZE = 12                  # Larger batch for smaller 4B model
+BATCH_SIZE = 4                   # A100 40GB with 8B VL model
 GRADIENT_ACCUMULATION_STEPS = 2  # Effective batch size = 12
 LEARNING_RATE = 2e-5
 WARMUP_STEPS = 30
@@ -180,12 +180,12 @@ def train():
     # Create output directory
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # Load tokenizer
-    print("\nLoading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
+    # Load processor (includes tokenizer)
+    print("\nLoading processor...")
+    processor = AutoProcessor.from_pretrained(MODEL, trust_remote_code=True)
+    processor.tokenizer.pad_token = processor.tokenizer.eos_token
+    processor.tokenizer.padding_side = "right"
+    tokenizer = processor.tokenizer  # For compatibility
 
     # Load and preprocess data
     print("Loading training data...")
@@ -194,7 +194,7 @@ def train():
 
     # Load base model in bf16 with optimizations
     print("\nLoading base model in bf16...")
-    model = AutoModelForCausalLM.from_pretrained(
+    model = AutoModelForVision2Seq.from_pretrained(
         MODEL,
         torch_dtype=torch.bfloat16,
         device_map="auto",
@@ -264,7 +264,7 @@ def train():
         # Save final adapters
         print("\nSaving adapters...")
         model.save_pretrained(OUTPUT_DIR)
-        tokenizer.save_pretrained(OUTPUT_DIR)
+        processor.save_pretrained(OUTPUT_DIR)
 
         print("\n" + "=" * 60)
         print("Training complete!")

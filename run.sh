@@ -11,7 +11,7 @@ set -e
 # Configuration
 PROJECT_ID=$(gcloud config get-value project 2>/dev/null || echo "")
 BUCKET="gs://${PROJECT_ID}-lora-models"
-GGUF_NAME="model-f16.gguf"
+GGUF_NAME="model-bf16.gguf"
 
 echo "============================================================"
 echo "  Qwen 8B LoRA Training Pipeline"
@@ -181,7 +181,4 @@ echo ""
 echo "Quantize locally with:"
 echo "  ./llama.cpp/build/bin/llama-quantize ${GGUF_NAME} model-q4_k_m.gguf Q4_K_M"
 echo ""
-echo "[7/7] Shutting down VM in 10 seconds..."
-echo "  (Press Ctrl+C to cancel shutdown)"
-sleep 10
-sudo shutdown -h now
+echo "Done! Remember to shut down your VM when finished."

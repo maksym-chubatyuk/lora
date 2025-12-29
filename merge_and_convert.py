@@ -21,8 +21,8 @@ from peft import PeftModel
 
 MODEL = "Qwen/Qwen3-8B"
 ADAPTER_PATH = "output/adapters"
-MERGED_PATH = "output/merged_fp16"
-GGUF_PATH = "output/model-f16.gguf"
+MERGED_PATH = "output/merged_bf16"
+GGUF_PATH = "output/model-bf16.gguf"
 LLAMA_CPP_PATH = "llama.cpp"
 
 
@@ -59,18 +59,18 @@ def check_prerequisites():
 def merge_adapters():
     """Merge LoRA adapters into the base model."""
     print("=" * 60)
-    print("Step 1: Merging LoRA Adapters")
+    print("Step 1: Merging LoRA Adapters (bf16)")
     print("=" * 60)
 
     if not torch.cuda.is_available():
         print("Warning: CUDA not available. This will be slow on CPU.")
 
-    print(f"\nLoading base model: {MODEL}")
+    print(f"\nLoading base model in bf16: {MODEL}")
     print("  This may take a few minutes...")
 
     base_model = AutoModelForCausalLM.from_pretrained(
         MODEL,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
     )
@@ -100,9 +100,9 @@ def merge_adapters():
 
 
 def convert_to_gguf():
-    """Convert merged HuggingFace model to GGUF format (fp16)."""
+    """Convert merged HuggingFace model to GGUF format (bf16)."""
     print("\n" + "=" * 60)
-    print("Step 2: Converting to GGUF (fp16)")
+    print("Step 2: Converting to GGUF (bf16)")
     print("=" * 60)
 
     convert_script = Path(LLAMA_CPP_PATH) / "convert_hf_to_gguf.py"
@@ -113,7 +113,7 @@ def convert_to_gguf():
 
     print(f"\nInput: {MERGED_PATH}")
     print(f"Output: {GGUF_PATH}")
-    print("\nRunning conversion to fp16 GGUF...")
+    print("\nRunning conversion to bf16 GGUF...")
 
     try:
         result = subprocess.run(
@@ -122,7 +122,7 @@ def convert_to_gguf():
                 str(convert_script),
                 MERGED_PATH,
                 "--outfile", GGUF_PATH,
-                "--outtype", "f16",
+                "--outtype", "bf16",
             ],
             check=True,
             capture_output=True,

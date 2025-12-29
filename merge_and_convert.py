@@ -19,7 +19,7 @@ from peft import PeftModel
 # Configuration
 # =============================================================================
 
-MODEL = "Qwen/Qwen3-8B"
+MODEL = "Qwen/Qwen3-8B-Instruct"
 ADAPTER_PATH = "output/adapters"
 MERGED_PATH = "output/merged_bf16"
 GGUF_PATH = "output/model-bf16.gguf"

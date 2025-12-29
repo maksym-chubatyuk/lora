@@ -68,12 +68,12 @@ class DataCollatorForCausalLM:
 # Configuration
 # =============================================================================
 
-MODEL = "Qwen/Qwen3-8B"
+MODEL = "Qwen/Qwen3-8B-Instruct"
 DATA_FILE = "asuka_training_data.jsonl"
 OUTPUT_DIR = "output/adapters"
 
 # Training hyperparameters
-MAX_STEPS = 500
+MAX_STEPS = 300
 BATCH_SIZE = 6                   # Balance between speed and memory
 GRADIENT_ACCUMULATION_STEPS = 2  # Effective batch size = 12
 LEARNING_RATE = 2e-5

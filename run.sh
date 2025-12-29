@@ -57,8 +57,8 @@ if [ ! -d "venv" ]; then
     pip install --upgrade pip
 
     echo ""
-    echo "  [2.2] Installing PyTorch with CUDA 12.1..."
-    pip install torch --index-url https://download.pytorch.org/whl/cu121
+    echo "  [2.2] Installing PyTorch + TorchVision with CUDA 12.1..."
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
     echo ""
     echo "  [2.3] Installing transformers..."

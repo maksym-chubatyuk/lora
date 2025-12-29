@@ -69,7 +69,7 @@ class DataCollatorForCausalLM:
 # =============================================================================
 
 MODEL = "Qwen/Qwen3-VL-8B-Instruct"
-DATA_FILE = "asuka_training_data.jsonl"
+DATA_FILE = "lilith_training_data.jsonl"
 OUTPUT_DIR = "output/adapters"
 
 # Training hyperparameters

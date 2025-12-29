@@ -192,18 +192,18 @@ def train():
     dataset = load_training_data(tokenizer)
     print(f"  Processed examples: {len(dataset)}")
 
-    # Load base model in fp16 with optimizations
-    print("\nLoading base model in fp16...")
+    # Load base model in bf16 with optimizations
+    print("\nLoading base model in bf16...")
     model = AutoModelForCausalLM.from_pretrained(
         MODEL,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
         attn_implementation="sdpa",  # Scaled-dot-product attention for speed
     )
 
-    # Enable gradient checkpointing to save memory
-    model.gradient_checkpointing_enable()
+    # Disable gradient checkpointing for speed (we have VRAM headroom)
+    # model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
 
     # Configure LoRA
@@ -231,14 +231,15 @@ def train():
         logging_steps=LOGGING_STEPS,
         save_steps=SAVE_STEPS,
         save_total_limit=3,
-        fp16=True,
+        bf16=True,  # bf16 is native to A100, faster than fp16
         optim="adamw_torch",  # PyTorch native optimizer (faster)
         lr_scheduler_type="linear",
         report_to="none",  # Disable wandb/tensorboard for speed
         remove_unused_columns=False,
         dataloader_pin_memory=True,
-        dataloader_num_workers=4,
-        gradient_checkpointing=True,
+        dataloader_num_workers=8,
+        dataloader_prefetch_factor=4,
+        gradient_checkpointing=False,
     )
 
     # Data collator

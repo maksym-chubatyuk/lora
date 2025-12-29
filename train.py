@@ -74,8 +74,8 @@ OUTPUT_DIR = "output/adapters"
 
 # Training hyperparameters
 MAX_STEPS = 500
-BATCH_SIZE = 4
-GRADIENT_ACCUMULATION_STEPS = 4  # Effective batch size = 16
+BATCH_SIZE = 8                   # Increased for better GPU utilization
+GRADIENT_ACCUMULATION_STEPS = 2  # Effective batch size = 16
 LEARNING_RATE = 2e-5
 WARMUP_STEPS = 30
 LOGGING_STEPS = 10
@@ -237,7 +237,7 @@ def train():
         report_to="none",  # Disable wandb/tensorboard for speed
         remove_unused_columns=False,
         dataloader_pin_memory=True,
-        dataloader_num_workers=2,
+        dataloader_num_workers=4,
         gradient_checkpointing=True,
     )
 

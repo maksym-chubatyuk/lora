@@ -202,11 +202,17 @@ def train():
         attn_implementation="sdpa",  # Scaled-dot-product attention for speed
     )
 
+    # Freeze the vision encoder - only train language model
+    print("Freezing vision encoder...")
+    for name, param in model.named_parameters():
+        if "visual" in name.lower() or "vision" in name.lower():
+            param.requires_grad = False
+
     # Enable gradient checkpointing to save memory
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
 
-    # Configure LoRA
+    # Configure LoRA (language model layers only)
     lora_config = LoraConfig(
         r=LORA_R,
         lora_alpha=LORA_ALPHA,

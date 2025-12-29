@@ -81,7 +81,11 @@ if [ ! -d "venv" ]; then
     pip install sentencepiece
 
     echo ""
-    echo "  [2.8] Installing huggingface_hub CLI..."
+    echo "  [2.8] Installing pillow (for VL model)..."
+    pip install pillow
+
+    echo ""
+    echo "  [2.9] Installing huggingface_hub CLI..."
     pip install huggingface_hub
 
     echo ""

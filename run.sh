@@ -52,15 +52,60 @@ if [ ! -d "venv" ]; then
     python3 -m venv venv
     source venv/bin/activate
 
-    echo "  Installing dependencies..."
-    pip install --upgrade pip -q
-    pip install torch --index-url https://download.pytorch.org/whl/cu121 -q
-    pip install "transformers>=4.45.0" datasets peft accelerate sentencepiece -q
-    echo "  Dependencies installed."
+    echo ""
+    echo "  [2.1] Upgrading pip..."
+    pip install --upgrade pip
+
+    echo ""
+    echo "  [2.2] Installing PyTorch with CUDA 12.1..."
+    pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+    echo ""
+    echo "  [2.3] Installing transformers..."
+    pip install "transformers>=4.45.0"
+
+    echo ""
+    echo "  [2.4] Installing datasets..."
+    pip install datasets
+
+    echo ""
+    echo "  [2.5] Installing peft (LoRA)..."
+    pip install peft
+
+    echo ""
+    echo "  [2.6] Installing accelerate..."
+    pip install accelerate
+
+    echo ""
+    echo "  [2.7] Installing sentencepiece..."
+    pip install sentencepiece
+
+    echo ""
+    echo "  [2.8] Installing huggingface_hub CLI..."
+    pip install huggingface_hub
+
+    echo ""
+    echo "  All dependencies installed successfully!"
 else
     echo ""
     echo "[2/7] Activating existing virtual environment..."
     source venv/bin/activate
+    echo "  Virtual environment activated."
+fi
+
+# -----------------------------------------------------------------------------
+# Step 2b: HuggingFace Authentication (for downloading models)
+# -----------------------------------------------------------------------------
+echo ""
+echo "[2b/7] Checking HuggingFace authentication..."
+if ! huggingface-cli whoami &>/dev/null; then
+    echo "  Not logged in. Running huggingface-cli login..."
+    echo "  Create a token at: https://huggingface.co/settings/tokens"
+    echo ""
+    huggingface-cli login
+else
+    HF_USER=$(huggingface-cli whoami 2>/dev/null | head -1)
+    echo "  Logged in as: ${HF_USER}"
 fi
 
 # -----------------------------------------------------------------------------
@@ -79,11 +124,22 @@ echo "  Training complete."
 echo ""
 echo "[4/7] Setting up llama.cpp..."
 if [ ! -d "llama.cpp" ]; then
-    echo "  Cloning llama.cpp..."
+    echo ""
+    echo "  [4.1] Cloning llama.cpp repository..."
     git clone --depth 1 https://github.com/ggerganov/llama.cpp
-    pip install gguf numpy -q
+
+    echo ""
+    echo "  [4.2] Installing gguf Python package..."
+    pip install gguf
+
+    echo ""
+    echo "  [4.3] Installing numpy..."
+    pip install numpy
+
+    echo ""
+    echo "  llama.cpp setup complete!"
 else
-    echo "  llama.cpp already exists."
+    echo "  llama.cpp already exists, skipping clone."
 fi
 
 # -----------------------------------------------------------------------------

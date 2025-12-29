@@ -68,7 +68,7 @@ class DataCollatorForCausalLM:
 # Configuration
 # =============================================================================
 
-MODEL = "Qwen/Qwen3-4B-Instruct"
+MODEL = "Qwen/Qwen3-4B-Instruct-2507"
 DATA_FILE = "asuka_training_data.jsonl"
 OUTPUT_DIR = "output/adapters"
 

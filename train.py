@@ -77,13 +77,13 @@ OUTPUT_DIR = "output/adapters"
 
 # Training hyperparameters
 MAX_STEPS = 300
-BATCH_SIZE = 4                   # A100 40GB with 8B VL model
-GRADIENT_ACCUMULATION_STEPS = 2  # Effective batch size = 12
+BATCH_SIZE = 1                   # A100 40GB with 8B VL model
+GRADIENT_ACCUMULATION_STEPS = 8  # Effective batch size = 8
 LEARNING_RATE = 2e-5
 WARMUP_STEPS = 30
 LOGGING_STEPS = 10
 SAVE_STEPS = 100
-MAX_SEQ_LENGTH = 2048
+MAX_SEQ_LENGTH = 1536            # Reduced for memory
 
 # LoRA Configuration
 LORA_R = 64

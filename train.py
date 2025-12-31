@@ -83,7 +83,7 @@ LEARNING_RATE = 2e-5
 WARMUP_STEPS = 30
 LOGGING_STEPS = 10
 SAVE_STEPS = 100
-MAX_SEQ_LENGTH = 1536            # Reduced for memory
+MAX_SEQ_LENGTH = 2048
 
 # LoRA Configuration
 LORA_R = 64

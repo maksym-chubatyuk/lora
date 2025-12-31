@@ -69,7 +69,11 @@ class DataCollatorForCausalLM:
 # =============================================================================
 
 MODEL = "Qwen/Qwen3-VL-8B-Instruct"
-DATA_FILE = "data.jsonl"
+DATA_FILES = [
+    "data.jsonl",           # ~1000 conversations (original)
+    "short_conv.jsonl",     # ~10000 short conversations (3-5 exchanges)
+    "long_conv.jsonl",      # ~2500 long conversations (10 exchanges)
+]
 OUTPUT_DIR = "output/adapters"
 
 # Training hyperparameters
@@ -99,21 +103,23 @@ LORA_TARGET_MODULES = [
 
 def check_data():
     """Verify training data exists."""
-    data_file = Path(DATA_FILE)
-    if not data_file.exists():
-        print(f"Error: {DATA_FILE} not found!")
-        return False
-
-    # Count examples
-    with open(data_file) as f:
-        count = sum(1 for _ in f)
-    print(f"Training examples: {count}")
+    total_count = 0
+    for data_file in DATA_FILES:
+        path = Path(data_file)
+        if not path.exists():
+            print(f"Error: {data_file} not found!")
+            return False
+        with open(path) as f:
+            count = sum(1 for _ in f)
+        print(f"  {data_file}: {count} examples")
+        total_count += count
+    print(f"Total training examples: {total_count}")
     return True
 
 
 def load_training_data(tokenizer):
     """Load and preprocess ShareGPT format training data."""
-    dataset = load_dataset("json", data_files=DATA_FILE, split="train")
+    dataset = load_dataset("json", data_files=DATA_FILES, split="train")
 
     def format_and_tokenize(example):
         """Convert ShareGPT format to chat template and tokenize."""
@@ -170,7 +176,7 @@ def train():
 
     print(f"\nGPU: {torch.cuda.get_device_name(0)}")
     print(f"Model: {MODEL}")
-    print(f"Data: {DATA_FILE}")
+    print(f"Data files: {len(DATA_FILES)}")
     print(f"Output: {OUTPUT_DIR}")
     print(f"Max steps: {MAX_STEPS}")
     print(f"Batch size: {BATCH_SIZE} (effective: {BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS})")

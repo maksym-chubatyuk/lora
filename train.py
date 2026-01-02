@@ -71,7 +71,8 @@ class DataCollatorForCausalLM:
 MODEL = "Qwen/Qwen3-VL-8B-Instruct"
 DATA_FILES = [
     "short_conv.jsonl",     # ~10000 short conversations (3-5 exchanges)
-    "long_conv.jsonl",      # ~2500 long conversations (10 exchanges)
+    "long_conv.jsonl",
+    "med_conv.jsonl"      # ~2500 long conversations (10 exchanges)
 ]
 OUTPUT_DIR = "output/adapters"
 
